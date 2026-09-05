@@ -1,36 +1,22 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
 
-const controlStyles =
-  "w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 " +
-  "placeholder:text-slate-400 focus:border-slate-900 focus:ring-1 focus:ring-slate-900 focus:outline-none " +
-  "disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 " +
-  "dark:focus:border-slate-100 dark:focus:ring-slate-100";
-
-export function Label({ className, ...props }: React.ComponentProps<"label">) {
-  return (
-    <label
-      className={cn("block text-sm font-medium text-slate-700 dark:text-slate-300", className)}
-      {...props}
-    />
-  );
-}
-
 export function Input({ className, ...props }: React.ComponentProps<"input">) {
-  return <input className={cn(controlStyles, className)} {...props} />;
+  return <input className={cn("input", className)} {...props} />;
 }
 
 export function Textarea({ className, ...props }: React.ComponentProps<"textarea">) {
-  return <textarea className={cn(controlStyles, "min-h-24 resize-y", className)} {...props} />;
+  return <textarea className={cn("input", className)} {...props} />;
 }
 
 export function Select({ className, ...props }: React.ComponentProps<"select">) {
-  return <select className={cn(controlStyles, "cursor-pointer", className)} {...props} />;
+  return <select className={cn("input", "cursor-pointer", className)} {...props} />;
 }
 
 /**
- * Labelled control wrapper. Renders validation messages from a server action
- * and wires `aria-describedby`/`aria-invalid` so screen readers announce them.
+ * Labelled control wrapper (the design system's `.field`). Renders
+ * validation messages from a server action and wires `aria-describedby` /
+ * `aria-invalid` so screen readers announce them.
  */
 export function Field({
   label,
@@ -50,8 +36,8 @@ export function Field({
   const hasError = Boolean(errors?.length);
 
   return (
-    <div className="space-y-1.5">
-      <Label htmlFor={name}>{label}</Label>
+    <div className="field">
+      <label htmlFor={name}>{label}</label>
       {React.isValidElement<Record<string, unknown>>(children)
         ? React.cloneElement(children, {
             id: name,
@@ -61,12 +47,16 @@ export function Field({
           })
         : children}
       {hint && !hasError && (
-        <p id={hintId} className="text-xs text-slate-500 dark:text-slate-400">
+        <p id={hintId} className="text-muted" style={{ fontSize: 11, marginTop: 4 }}>
           {hint}
         </p>
       )}
       {hasError && (
-        <p id={errorId} className="text-xs text-rose-600 dark:text-rose-400">
+        <p
+          id={errorId}
+          style={{ fontSize: 11, marginTop: 4, color: "var(--color-accent-700)" }}
+          role="alert"
+        >
           {errors!.join(" ")}
         </p>
       )}

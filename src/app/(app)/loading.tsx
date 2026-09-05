@@ -1,14 +1,38 @@
+function Skeleton({ style }: { style: React.CSSProperties }) {
+  return (
+    <div
+      style={{
+        background: "var(--color-neutral-200)",
+        animation: "pulse 1.5s ease-in-out infinite",
+        ...style,
+      }}
+    />
+  );
+}
+
 export default function Loading() {
   return (
-    <div className="space-y-4" aria-busy role="status">
+    <div
+      style={{
+        padding: "var(--space-6)",
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-4)",
+      }}
+      aria-busy
+      role="status"
+    >
       <span className="sr-only">Loading…</span>
-      <div className="h-8 w-48 animate-pulse rounded bg-slate-100 dark:bg-slate-800" />
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <Skeleton style={{ height: 32, width: 200 }} />
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+          gap: "var(--space-4)",
+        }}
+      >
         {Array.from({ length: 6 }).map((_, index) => (
-          <div
-            key={index}
-            className="h-36 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800"
-          />
+          <Skeleton key={index} style={{ height: 140 }} />
         ))}
       </div>
     </div>

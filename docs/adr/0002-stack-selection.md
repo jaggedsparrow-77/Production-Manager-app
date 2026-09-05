@@ -5,10 +5,10 @@
 
 ## Context
 
-A project-management app is CRUD over a relational domain — projects, tasks, members,
-comments — with real-time-ish collaboration desirable later. It needs authentication,
-authorization scoped per project, and a UI with meaningful interactivity on a few surfaces
-(forms, boards) but mostly server-rendered content.
+A production-management app is CRUD over a relational domain — shows, departments, schedules,
+meetings, budgets — with real-time-ish collaboration desirable later. It needs authentication,
+role-based authorization, and a UI with meaningful interactivity on a few surfaces (forms,
+checklists, a decision-log dialog) but mostly server-rendered content.
 
 ## Decision
 
@@ -18,9 +18,11 @@ duplicated request/response types. The alternative — a separate SPA plus an AP
 buys deployment independence we do not need at this size and costs a serialization boundary
 we would maintain by hand.
 
-**Postgres, self-hosted via Docker locally.** The domain is relational: tasks belong to
-projects, membership gates access, reporting means aggregate queries across joins. Postgres
-also gives transactions, which the task-number allocation depends on for correctness.
+**Postgres, self-hosted via Docker locally.** The domain is relational: departments, budget
+lines, schedule calls and meetings all belong to a show, membership gates access at the
+organization level, and reporting means aggregate queries across joins (budget rollups, the
+next upcoming call per show). Postgres also gives transactions and `DISTINCT ON`, both of which
+the portfolio queries lean on.
 
 **Drizzle as the ORM.** The schema is TypeScript, so row types are inferred rather than
 generated, and the query builder stays close enough to SQL that a complex aggregate is

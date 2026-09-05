@@ -6,35 +6,38 @@ import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { db } from "@/db";
-import { comments, projectMembers, projects, tasks, taskStatuses, users } from "@/db/schema";
-import { DEFAULT_STATUSES } from "@/lib/constants";
 import {
-  addMemberSchema,
-  createCommentSchema,
-  createProjectSchema,
-  createTaskSchema,
-  moveTaskSchema,
-  updateProjectSchema,
-  updateTaskSchema,
+  activityEntries,
+  departmentNotes,
+  departments,
+  meetingActions,
+  meetings,
+  organizationMembers,
+  shows,
+  tasks,
+  users,
+} from "@/db/schema";
+import {
+  addDepartmentNoteSchema,
+  addMeetingActionSchema,
+  addOrganizationMemberSchema,
+  addTaskSchema,
+  createShowSchema,
+  logDecisionSchema,
+  toggleMeetingActionSchema,
+  toggleTaskSchema,
 } from "@/lib/validation";
-import { AuthorizationError, requireProjectRole, requireUserId } from "./auth-guards";
+import { AuthorizationError, requireOrgRole } from "./auth-guards";
 
 /**
- * Mutations.
- *
- * Contract for every action in this file:
- *   1. Parse FormData through a zod schema — never trust the client.
- *   2. Authorize against the caller's project role.
- *   3. Mutate, then revalidate the affected paths.
- *
- * Actions return `ActionState` instead of throwing so forms can render the
- * error inline via `useActionState`.
+ * Mutations. Every action: parse FormData with zod → authorize via
+ * requireOrgRole → mutate → revalidate. Actions return `ActionState` instead
+ * of throwing so forms can render the error inline via `useActionState`.
  */
 
 export type ActionState = {
   ok: boolean;
   message?: string;
-  /** Field-level messages keyed by input name. */
   errors?: Record<string, string[]>;
 };
 
@@ -48,7 +51,6 @@ function fieldErrors(error: z.ZodError): ActionState {
   };
 }
 
-/** Wraps an action body so expected failures become form state, not crashes. */
 async function run(body: () => Promise<ActionState>): Promise<ActionState> {
   try {
     return await body();
@@ -62,112 +64,302 @@ async function run(body: () => Promise<ActionState>): Promise<ActionState> {
 }
 
 /* -------------------------------------------------------------------------
- * Projects
+ * Shows
  * ---------------------------------------------------------------------- */
 
-export async function createProject(
+export async function createShow(
   _prev: ActionState | undefined,
   formData: FormData,
 ): Promise<ActionState> {
-  const userId = await requireUserId();
+  const { organizationId } = await requireOrgRole("admin");
 
-  const parsed = createProjectSchema.safeParse({
-    name: formData.get("name"),
-    key: formData.get("key"),
-    description: formData.get("description"),
+  const parsed = createShowSchema.safeParse({
+    title: formData.get("title"),
+    venue: formData.get("venue"),
+    openDate: formData.get("openDate"),
+    closeDate: formData.get("closeDate"),
+    phase: formData.get("phase"),
+    director: formData.get("director"),
+    designer: formData.get("designer"),
+    companySize: formData.get("companySize"),
   });
   if (!parsed.success) return fieldErrors(parsed.error);
 
-  const { name, key, description } = parsed.data;
-
-  const existing = await db.query.projects.findFirst({
-    where: sql`upper(${projects.key}) = ${key}`,
-    columns: { id: true },
-  });
-  if (existing) {
-    return { ok: false, errors: { key: ["That project key is already taken."] } };
+  const input = parsed.data;
+  if (new Date(input.closeDate) < new Date(input.openDate)) {
+    return { ok: false, errors: { closeDate: ["Close date must be on or after the open date."] } };
   }
 
-  // One transaction so a project can never exist without its board columns
-  // or its owner membership.
-  const projectId = await db.transaction(async (tx) => {
-    const [project] = await tx
-      .insert(projects)
-      .values({ name, key, description: description || null, ownerId: userId })
-      .returning({ id: projects.id });
+  const [show] = await db
+    .insert(shows)
+    .values({
+      organizationId,
+      title: input.title,
+      venue: input.venue,
+      openDate: new Date(input.openDate),
+      closeDate: new Date(input.closeDate),
+      phase: input.phase,
+      director: input.director || null,
+      designer: input.designer || null,
+      companySize: input.companySize === "" ? null : input.companySize,
+    })
+    .returning({ id: shows.id });
 
-    if (!project) throw new Error("Failed to create project");
+  if (!show) throw new Error("Failed to create show");
 
-    await tx.insert(projectMembers).values({
-      projectId: project.id,
-      userId,
-      role: "owner",
-    });
-
-    await tx.insert(taskStatuses).values(
-      DEFAULT_STATUSES.map((status, index) => ({
-        projectId: project.id,
-        name: status.name,
-        category: status.category,
-        position: index,
-        isDefault: index === 0,
-      })),
-    );
-
-    return project.id;
-  });
-
-  revalidatePath("/projects");
-  redirect(`/projects/${projectId}`);
+  revalidatePath("/shows");
+  redirect(`/shows/${show.id}`);
 }
 
-export async function updateProject(
+/* -------------------------------------------------------------------------
+ * Decision log / activity
+ * ---------------------------------------------------------------------- */
+
+export async function logDecision(
   _prev: ActionState | undefined,
   formData: FormData,
 ): Promise<ActionState> {
   return run(async () => {
-    const parsed = updateProjectSchema.safeParse({
-      id: formData.get("id"),
-      name: formData.get("name"),
-      description: formData.get("description"),
-      status: formData.get("status"),
+    const { userId, organizationId } = await requireOrgRole("member");
+
+    const parsed = logDecisionSchema.safeParse({
+      showId: formData.get("showId"),
+      department: formData.get("department"),
+      text: formData.get("text"),
     });
     if (!parsed.success) return fieldErrors(parsed.error);
 
-    const { id, name, description, status } = parsed.data;
-    await requireProjectRole(id, "admin");
+    const { showId, department, text } = parsed.data;
 
-    await db
-      .update(projects)
-      .set({
-        name,
-        description: description || null,
-        status,
-        archivedAt: status === "archived" ? new Date() : null,
-        updatedAt: new Date(),
-      })
-      .where(eq(projects.id, id));
+    const show = await db.query.shows.findFirst({
+      where: and(eq(shows.id, showId), eq(shows.organizationId, organizationId)),
+      columns: { id: true },
+    });
+    if (!show) return { ok: false, message: "Show not found." };
 
-    revalidatePath("/projects");
-    revalidatePath(`/projects/${id}`);
+    await db.insert(activityEntries).values({
+      organizationId,
+      showId,
+      departmentName: department,
+      kind: "decision",
+      text,
+      authorId: userId,
+    });
+
+    revalidatePath("/shows");
+    revalidatePath(`/shows/${showId}`);
+    return { ok: true, message: "Decision logged." };
+  });
+}
+
+/* -------------------------------------------------------------------------
+ * Departments
+ * ---------------------------------------------------------------------- */
+
+export async function addDepartmentNote(
+  _prev: ActionState | undefined,
+  formData: FormData,
+): Promise<ActionState> {
+  return run(async () => {
+    const { userId, organizationId } = await requireOrgRole("member");
+
+    const parsed = addDepartmentNoteSchema.safeParse({
+      departmentId: formData.get("departmentId"),
+      body: formData.get("body"),
+    });
+    if (!parsed.success) return fieldErrors(parsed.error);
+
+    const { departmentId, body } = parsed.data;
+
+    const department = await db.query.departments.findFirst({
+      where: eq(departments.id, departmentId),
+      with: { show: { columns: { id: true, organizationId: true } } },
+    });
+    if (!department || department.show.organizationId !== organizationId) {
+      return { ok: false, message: "Department not found." };
+    }
+
+    await db.insert(departmentNotes).values({ departmentId, authorId: userId, body });
+
+    revalidatePath(`/shows/${department.show.id}/departments`);
     return OK;
   });
 }
 
-export async function addProjectMember(
+/* -------------------------------------------------------------------------
+ * Tasks
+ * ---------------------------------------------------------------------- */
+
+export async function addTask(
   _prev: ActionState | undefined,
   formData: FormData,
 ): Promise<ActionState> {
   return run(async () => {
-    const parsed = addMemberSchema.safeParse({
-      projectId: formData.get("projectId"),
+    const { organizationId } = await requireOrgRole("member");
+
+    const parsed = addTaskSchema.safeParse({
+      showId: formData.get("showId"),
+      label: formData.get("label"),
+      ownerName: formData.get("ownerName"),
+      dueDate: formData.get("dueDate"),
+      tag: formData.get("tag"),
+    });
+    if (!parsed.success) return fieldErrors(parsed.error);
+
+    const { showId, label, ownerName, dueDate, tag } = parsed.data;
+
+    const show = await db.query.shows.findFirst({
+      where: and(eq(shows.id, showId), eq(shows.organizationId, organizationId)),
+      columns: { id: true },
+    });
+    if (!show) return { ok: false, message: "Show not found." };
+
+    const [{ next } = { next: 0 }] = await db
+      .select({ next: sql<number>`coalesce(max(${tasks.position}), 0) + 1` })
+      .from(tasks)
+      .where(eq(tasks.showId, showId));
+
+    await db.insert(tasks).values({
+      showId,
+      label,
+      ownerName,
+      dueDate,
+      tag,
+      position: Number(next),
+    });
+
+    revalidatePath(`/shows/${showId}`);
+    return OK;
+  });
+}
+
+export async function toggleTask(formData: FormData): Promise<ActionState> {
+  return run(async () => {
+    const { organizationId } = await requireOrgRole("member");
+
+    const parsed = toggleTaskSchema.safeParse({
+      id: formData.get("id"),
+      done: formData.get("done"),
+    });
+    if (!parsed.success) return fieldErrors(parsed.error);
+
+    const { id, done } = parsed.data;
+
+    const task = await db.query.tasks.findFirst({
+      where: eq(tasks.id, id),
+      with: { show: { columns: { id: true, organizationId: true } } },
+    });
+    if (!task || task.show.organizationId !== organizationId) {
+      return { ok: false, message: "Task not found." };
+    }
+
+    await db
+      .update(tasks)
+      .set({ done, doneAt: done ? new Date() : null })
+      .where(eq(tasks.id, id));
+
+    revalidatePath(`/shows/${task.show.id}`);
+    return OK;
+  });
+}
+
+/* -------------------------------------------------------------------------
+ * Meeting actions
+ * ---------------------------------------------------------------------- */
+
+export async function addMeetingAction(
+  _prev: ActionState | undefined,
+  formData: FormData,
+): Promise<ActionState> {
+  return run(async () => {
+    const { organizationId } = await requireOrgRole("member");
+
+    const parsed = addMeetingActionSchema.safeParse({
+      meetingId: formData.get("meetingId"),
+      text: formData.get("text"),
+      ownerName: formData.get("ownerName"),
+      dueDate: formData.get("dueDate"),
+      tag: formData.get("tag"),
+    });
+    if (!parsed.success) return fieldErrors(parsed.error);
+
+    const { meetingId, text, ownerName, dueDate, tag } = parsed.data;
+
+    const meeting = await db.query.meetings.findFirst({
+      where: eq(meetings.id, meetingId),
+      with: { show: { columns: { id: true, organizationId: true } } },
+    });
+    if (!meeting || meeting.show.organizationId !== organizationId) {
+      return { ok: false, message: "Meeting not found." };
+    }
+
+    const [{ next } = { next: 0 }] = await db
+      .select({ next: sql<number>`coalesce(max(${meetingActions.position}), 0) + 1` })
+      .from(meetingActions)
+      .where(eq(meetingActions.meetingId, meetingId));
+
+    await db.insert(meetingActions).values({
+      meetingId,
+      text,
+      ownerName,
+      dueDate,
+      tag,
+      position: Number(next),
+    });
+
+    revalidatePath(`/shows/${meeting.show.id}/meetings/${meetingId}`);
+    return OK;
+  });
+}
+
+export async function toggleMeetingAction(formData: FormData): Promise<ActionState> {
+  return run(async () => {
+    const { organizationId } = await requireOrgRole("member");
+
+    const parsed = toggleMeetingActionSchema.safeParse({
+      id: formData.get("id"),
+      done: formData.get("done"),
+    });
+    if (!parsed.success) return fieldErrors(parsed.error);
+
+    const { id, done } = parsed.data;
+
+    const action = await db.query.meetingActions.findFirst({
+      where: eq(meetingActions.id, id),
+      with: { meeting: { with: { show: { columns: { id: true, organizationId: true } } } } },
+    });
+    if (!action || action.meeting.show.organizationId !== organizationId) {
+      return { ok: false, message: "Action not found." };
+    }
+
+    await db
+      .update(meetingActions)
+      .set({ done, doneAt: done ? new Date() : null })
+      .where(eq(meetingActions.id, id));
+
+    revalidatePath(`/shows/${action.meeting.show.id}/meetings/${action.meetingId}`);
+    return OK;
+  });
+}
+
+/* -------------------------------------------------------------------------
+ * Organization members
+ * ---------------------------------------------------------------------- */
+
+export async function addOrganizationMember(
+  _prev: ActionState | undefined,
+  formData: FormData,
+): Promise<ActionState> {
+  return run(async () => {
+    const { organizationId } = await requireOrgRole("admin");
+
+    const parsed = addOrganizationMemberSchema.safeParse({
       email: formData.get("email"),
       role: formData.get("role") || undefined,
     });
     if (!parsed.success) return fieldErrors(parsed.error);
 
-    const { projectId, email, role } = parsed.data;
-    await requireProjectRole(projectId, "admin");
+    const { email, role } = parsed.data;
 
     const invitee = await db.query.users.findFirst({
       where: eq(users.email, email),
@@ -178,228 +370,14 @@ export async function addProjectMember(
     }
 
     await db
-      .insert(projectMembers)
-      .values({ projectId, userId: invitee.id, role })
+      .insert(organizationMembers)
+      .values({ organizationId, userId: invitee.id, role })
       .onConflictDoUpdate({
-        target: [projectMembers.projectId, projectMembers.userId],
+        target: [organizationMembers.organizationId, organizationMembers.userId],
         set: { role },
       });
 
-    revalidatePath(`/projects/${projectId}`);
-    return { ok: true, message: `${email} added to the project.` };
-  });
-}
-
-/* -------------------------------------------------------------------------
- * Tasks
- * ---------------------------------------------------------------------- */
-
-export async function createTask(
-  _prev: ActionState | undefined,
-  formData: FormData,
-): Promise<ActionState> {
-  return run(async () => {
-    const parsed = createTaskSchema.safeParse({
-      projectId: formData.get("projectId"),
-      title: formData.get("title"),
-      description: formData.get("description"),
-      statusId: formData.get("statusId"),
-      assigneeId: formData.get("assigneeId"),
-      priority: formData.get("priority") || undefined,
-      dueDate: formData.get("dueDate"),
-    });
-    if (!parsed.success) return fieldErrors(parsed.error);
-
-    const input = parsed.data;
-    const { userId } = await requireProjectRole(input.projectId, "member");
-
-    await db.transaction(async (tx) => {
-      // Bump the counter inside the transaction so two concurrent creates
-      // cannot claim the same task number.
-      const [project] = await tx
-        .update(projects)
-        .set({ taskCounter: sql`${projects.taskCounter} + 1`, updatedAt: new Date() })
-        .where(eq(projects.id, input.projectId))
-        .returning({ number: projects.taskCounter });
-
-      if (!project) throw new Error("Project not found");
-
-      // Confirm the status belongs to this project — the id came from a form.
-      const status = await tx.query.taskStatuses.findFirst({
-        where: and(
-          eq(taskStatuses.id, input.statusId),
-          eq(taskStatuses.projectId, input.projectId),
-        ),
-        columns: { id: true },
-      });
-      if (!status) throw new AuthorizationError("That status does not belong to this project.");
-
-      const [{ next } = { next: 0 }] = await tx
-        .select({ next: sql<number>`coalesce(max(${tasks.position}), 0) + 1` })
-        .from(tasks)
-        .where(eq(tasks.statusId, input.statusId));
-
-      await tx.insert(tasks).values({
-        projectId: input.projectId,
-        number: project.number,
-        title: input.title,
-        description: input.description || null,
-        statusId: input.statusId,
-        assigneeId: input.assigneeId,
-        createdById: userId,
-        priority: input.priority,
-        dueDate: input.dueDate,
-        position: Number(next),
-      });
-    });
-
-    revalidatePath(`/projects/${input.projectId}`);
-    return { ok: true, message: "Task created." };
-  });
-}
-
-export async function updateTask(
-  _prev: ActionState | undefined,
-  formData: FormData,
-): Promise<ActionState> {
-  return run(async () => {
-    const parsed = updateTaskSchema.safeParse({
-      id: formData.get("id"),
-      title: formData.get("title"),
-      description: formData.get("description"),
-      statusId: formData.get("statusId"),
-      assigneeId: formData.get("assigneeId"),
-      priority: formData.get("priority"),
-      dueDate: formData.get("dueDate"),
-    });
-    if (!parsed.success) return fieldErrors(parsed.error);
-
-    const input = parsed.data;
-
-    const existing = await db.query.tasks.findFirst({
-      where: eq(tasks.id, input.id),
-      columns: { projectId: true },
-    });
-    if (!existing) return { ok: false, message: "Task not found." };
-
-    await requireProjectRole(existing.projectId, "member");
-
-    const status = await db.query.taskStatuses.findFirst({
-      where: and(
-        eq(taskStatuses.id, input.statusId),
-        eq(taskStatuses.projectId, existing.projectId),
-      ),
-      columns: { category: true },
-    });
-    if (!status) return { ok: false, message: "That status does not belong to this project." };
-
-    await db
-      .update(tasks)
-      .set({
-        title: input.title,
-        description: input.description || null,
-        statusId: input.statusId,
-        assigneeId: input.assigneeId,
-        priority: input.priority,
-        dueDate: input.dueDate,
-        completedAt: status.category === "done" ? new Date() : null,
-        updatedAt: new Date(),
-      })
-      .where(eq(tasks.id, input.id));
-
-    revalidatePath(`/projects/${existing.projectId}`);
-    revalidatePath(`/tasks/${input.id}`);
-    return { ok: true, message: "Task updated." };
-  });
-}
-
-/** Column-to-column move, used by the board's status buttons. */
-export async function moveTask(formData: FormData): Promise<ActionState> {
-  return run(async () => {
-    const parsed = moveTaskSchema.safeParse({
-      id: formData.get("id"),
-      statusId: formData.get("statusId"),
-    });
-    if (!parsed.success) return fieldErrors(parsed.error);
-
-    const { id, statusId } = parsed.data;
-
-    const existing = await db.query.tasks.findFirst({
-      where: eq(tasks.id, id),
-      columns: { projectId: true },
-    });
-    if (!existing) return { ok: false, message: "Task not found." };
-
-    await requireProjectRole(existing.projectId, "member");
-
-    const status = await db.query.taskStatuses.findFirst({
-      where: and(eq(taskStatuses.id, statusId), eq(taskStatuses.projectId, existing.projectId)),
-      columns: { category: true },
-    });
-    if (!status) return { ok: false, message: "That status does not belong to this project." };
-
-    await db
-      .update(tasks)
-      .set({
-        statusId,
-        completedAt: status.category === "done" ? new Date() : null,
-        updatedAt: new Date(),
-      })
-      .where(eq(tasks.id, id));
-
-    revalidatePath(`/projects/${existing.projectId}`);
-    revalidatePath(`/tasks/${id}`);
-    return OK;
-  });
-}
-
-export async function deleteTask(formData: FormData): Promise<ActionState> {
-  return run(async () => {
-    const id = z.uuid().safeParse(formData.get("id"));
-    if (!id.success) return { ok: false, message: "Invalid task." };
-
-    const existing = await db.query.tasks.findFirst({
-      where: eq(tasks.id, id.data),
-      columns: { projectId: true },
-    });
-    if (!existing) return { ok: false, message: "Task not found." };
-
-    await requireProjectRole(existing.projectId, "member");
-    await db.delete(tasks).where(eq(tasks.id, id.data));
-
-    revalidatePath(`/projects/${existing.projectId}`);
-    redirect(`/projects/${existing.projectId}`);
-  });
-}
-
-/* -------------------------------------------------------------------------
- * Comments
- * ---------------------------------------------------------------------- */
-
-export async function createComment(
-  _prev: ActionState | undefined,
-  formData: FormData,
-): Promise<ActionState> {
-  return run(async () => {
-    const parsed = createCommentSchema.safeParse({
-      taskId: formData.get("taskId"),
-      body: formData.get("body"),
-    });
-    if (!parsed.success) return fieldErrors(parsed.error);
-
-    const { taskId, body } = parsed.data;
-
-    const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, taskId),
-      columns: { projectId: true },
-    });
-    if (!task) return { ok: false, message: "Task not found." };
-
-    const { userId } = await requireProjectRole(task.projectId, "member");
-
-    await db.insert(comments).values({ taskId, authorId: userId, body });
-
-    revalidatePath(`/tasks/${taskId}`);
-    return OK;
+    revalidatePath("/company");
+    return { ok: true, message: `${email} added.` };
   });
 }

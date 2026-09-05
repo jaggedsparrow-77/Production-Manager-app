@@ -1,31 +1,61 @@
-import type { StatusCategory, TaskPriority } from "@/db/schema";
+import type { FlagTag, HealthState, MeetingStatus } from "@/db/schema";
 
-/** Board columns created for every new project. Users can edit them after. */
-export const DEFAULT_STATUSES: ReadonlyArray<{ name: string; category: StatusCategory }> = [
-  { name: "Backlog", category: "backlog" },
-  { name: "In Progress", category: "active" },
-  { name: "In Review", category: "active" },
-  { name: "Done", category: "done" },
-];
+/**
+ * The decision-log dialog offers a fixed department picker rather than
+ * pulling from each show's actual department rows — a decision can concern a
+ * department a given show hasn't set up yet, and the dialog has no notion of
+ * "which show" until the producer picks one.
+ */
+export const DECISION_DEPARTMENTS = [
+  "Lighting",
+  "Sound",
+  "AV",
+  "Staging",
+  "Costume",
+  "Production",
+] as const;
 
-export const PRIORITY_LABELS: Record<TaskPriority, string> = {
-  low: "Low",
-  medium: "Medium",
-  high: "High",
+export const FLAG_LABELS: Record<FlagTag, string> = {
+  at_risk: "At risk",
   urgent: "Urgent",
+  carried_forward: "Carried fwd",
 };
 
-/** Tailwind classes per priority, kept next to the labels so they stay in sync. */
-export const PRIORITY_STYLES: Record<TaskPriority, string> = {
-  low: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
-  medium: "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300",
-  high: "bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-300",
-  urgent: "bg-rose-100 text-rose-900 dark:bg-rose-950 dark:text-rose-300",
+/** Tag pill modifier, applied alongside the base `.tag` class (globals.css). */
+export const FLAG_CLASSES: Record<FlagTag, string> = {
+  at_risk: "tag-accent",
+  urgent: "tag-accent-2",
+  carried_forward: "tag-neutral",
 };
 
-export const PRIORITY_ORDER: Record<TaskPriority, number> = {
-  urgent: 0,
-  high: 1,
-  medium: 2,
-  low: 3,
+export const HEALTH_LABELS: Record<HealthState, string> = {
+  ok: "On track",
+  warn: "Needs attention",
+  risk: "At risk",
 };
+
+/** CSS custom-property name backing each state's status dot. */
+export const HEALTH_DOT_VAR: Record<HealthState, string> = {
+  ok: "var(--color-neutral-600)",
+  warn: "var(--color-accent-400)",
+  risk: "var(--color-accent)",
+};
+
+export const HEALTH_TAG_CLASSES: Record<HealthState, string> = {
+  ok: "tag-neutral",
+  warn: "tag-accent-2",
+  risk: "tag-accent",
+};
+
+export const MEETING_STATUS_LABELS: Record<MeetingStatus, string> = {
+  scheduled: "Scheduled",
+  minutes_issued: "Minutes issued",
+};
+
+export const SHOW_TABS = [
+  { segment: "", label: "Overview" },
+  { segment: "schedule", label: "Schedule" },
+  { segment: "meetings", label: "Meetings" },
+  { segment: "budget", label: "Budget" },
+  { segment: "departments", label: "Departments" },
+] as const;

@@ -1,80 +1,79 @@
 import { z } from "zod";
+import { DECISION_DEPARTMENTS } from "./constants";
 
 /**
  * Input schemas shared by server actions and forms.
  *
- * Server actions receive untrusted FormData, so every action parses its input
- * through one of these before touching the database. Keeping them in a
- * client-safe module (no db imports) lets forms reuse them for inline hints.
+ * Server actions receive untrusted FormData, so every action parses its
+ * input through one of these before touching the database. Kept in a
+ * client-safe module (no db imports) so forms can reuse the same rules for
+ * inline hints.
  */
 
 const trimmed = (max: number) => z.string().trim().max(max);
-
-export const projectKeySchema = trimmed(10)
-  .min(2, "Key must be at least 2 characters")
-  .regex(/^[A-Za-z][A-Za-z0-9]*$/, "Key must start with a letter and contain only letters/numbers")
-  .transform((value) => value.toUpperCase());
-
-export const createProjectSchema = z.object({
-  name: trimmed(120).min(2, "Name must be at least 2 characters"),
-  key: projectKeySchema,
-  description: trimmed(2000).optional().or(z.literal("")),
-});
-
-export const updateProjectSchema = z.object({
-  id: z.uuid(),
-  name: trimmed(120).min(2, "Name must be at least 2 characters"),
-  description: trimmed(2000).optional().or(z.literal("")),
-  status: z.enum(["active", "on_hold", "archived"]),
-});
-
-/** Empty string is what an unselected <select> submits; treat it as "none". */
-const optionalId = z
-  .union([z.uuid(), z.literal("")])
-  .optional()
-  .transform((value) => (value ? value : null));
 
 const optionalDate = z
   .union([z.iso.date(), z.literal("")])
   .optional()
   .transform((value) => (value ? new Date(`${value}T00:00:00Z`) : null));
 
-export const createTaskSchema = z.object({
-  projectId: z.uuid(),
-  title: trimmed(200).min(2, "Title must be at least 2 characters"),
-  description: trimmed(5000).optional().or(z.literal("")),
-  statusId: z.uuid(),
-  assigneeId: optionalId,
-  priority: z.enum(["low", "medium", "high", "urgent"]).default("medium"),
+const optionalTag = z
+  .union([z.enum(["at_risk", "urgent", "carried_forward"]), z.literal("")])
+  .optional()
+  .transform((value) => (value ? value : null));
+
+export const createShowSchema = z.object({
+  title: trimmed(120).min(2, "Title must be at least 2 characters"),
+  venue: trimmed(120).min(2, "Venue must be at least 2 characters"),
+  openDate: z.iso.date("Enter a valid open date"),
+  closeDate: z.iso.date("Enter a valid close date"),
+  phase: trimmed(60).min(2, "Phase must be at least 2 characters"),
+  director: trimmed(120).optional().or(z.literal("")),
+  designer: trimmed(120).optional().or(z.literal("")),
+  companySize: z.coerce.number().int().positive().optional().or(z.literal("")),
+});
+
+export const logDecisionSchema = z.object({
+  showId: z.uuid(),
+  department: z.enum(DECISION_DEPARTMENTS),
+  text: trimmed(2000).min(2, "Enter what was decided"),
+});
+
+export const addDepartmentNoteSchema = z.object({
+  departmentId: z.uuid(),
+  body: trimmed(2000).min(2, "Enter a note"),
+});
+
+export const addTaskSchema = z.object({
+  showId: z.uuid(),
+  label: trimmed(300).min(2, "Enter a task"),
+  ownerName: trimmed(120).min(1, "Enter an owner"),
   dueDate: optionalDate,
+  tag: optionalTag,
 });
 
-export const updateTaskSchema = z.object({
+export const toggleTaskSchema = z.object({
   id: z.uuid(),
-  title: trimmed(200).min(2, "Title must be at least 2 characters"),
-  description: trimmed(5000).optional().or(z.literal("")),
-  statusId: z.uuid(),
-  assigneeId: optionalId,
-  priority: z.enum(["low", "medium", "high", "urgent"]),
+  done: z.enum(["true", "false"]).transform((v) => v === "true"),
+});
+
+export const addMeetingActionSchema = z.object({
+  meetingId: z.uuid(),
+  text: trimmed(300).min(2, "Enter an action"),
+  ownerName: trimmed(120).min(1, "Enter an owner"),
   dueDate: optionalDate,
+  tag: optionalTag,
 });
 
-export const moveTaskSchema = z.object({
+export const toggleMeetingActionSchema = z.object({
   id: z.uuid(),
-  statusId: z.uuid(),
+  done: z.enum(["true", "false"]).transform((v) => v === "true"),
 });
 
-export const createCommentSchema = z.object({
-  taskId: z.uuid(),
-  body: trimmed(5000).min(1, "Comment cannot be empty"),
-});
-
-export const addMemberSchema = z.object({
-  projectId: z.uuid(),
+export const addOrganizationMemberSchema = z.object({
   email: z.email("Enter a valid email address").toLowerCase(),
   role: z.enum(["admin", "member", "viewer"]).default("member"),
 });
 
-export type CreateProjectInput = z.infer<typeof createProjectSchema>;
-export type CreateTaskInput = z.infer<typeof createTaskSchema>;
-export type UpdateTaskInput = z.infer<typeof updateTaskSchema>;
+export type CreateShowInput = z.infer<typeof createShowSchema>;
+export type LogDecisionInput = z.infer<typeof logDecisionSchema>;

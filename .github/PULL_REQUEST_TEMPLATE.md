@@ -16,4 +16,4 @@
 - [ ] New behaviour has a test
 - [ ] Schema changes include a generated migration (`npm run db:generate`)
 - [ ] Any new env var is documented in `.env.example` and validated in `src/env.ts`
-- [ ] Mutations authorize the caller via `requireProjectRole`
+- [ ] Mutations authorize the caller via `requireOrgRole`

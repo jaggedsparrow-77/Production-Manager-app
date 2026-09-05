@@ -14,7 +14,7 @@
 [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
-feat(tasks): add due-date filter to the board
+feat(schedule): add a full-week view alongside Today
 fix(auth): redirect to the requested page after sign-in
 chore(deps): bump drizzle-orm to 0.45
 docs(readme): document the seed workflow
@@ -30,11 +30,18 @@ you need state, effects, or event handlers — and push it as far down the tree 
 the interactive leaf, not the whole page, ships to the browser.
 
 **Every mutation is a server action.** In `src/server/actions.ts`, following the same three
-steps: parse with zod → authorize with `requireProjectRole` → mutate and revalidate. Actions
-return `ActionState` rather than throwing, so forms can render errors inline.
+steps: parse with zod → authorize with `requireOrgRole` → mutate and revalidate. Actions return
+`ActionState` rather than throwing, so forms can render errors inline.
 
-**Never trust an id from the client.** A form can submit any UUID. Actions verify that a
-`statusId` belongs to the project it claims to, and queries join through `project_member`.
+**Never trust an id from the client.** A form can submit any UUID. Actions and queries scope
+every lookup to the caller's `organizationId` (see `requireOrgRole`/`requireMembership` in
+`src/server/auth-guards.ts`), so an id for another org's data resolves to nothing rather than
+leaking it.
+
+**A toggle-open inline form closes itself via `useCloseFormOnSuccess`**
+(`src/hooks/use-close-form-on-success.ts`), not a `useEffect` that calls `setState` on success —
+the latter trips the `react-hooks/set-state-in-effect` lint rule. Copy the pattern from an
+existing form (e.g. `add-task-form.tsx`) rather than reinventing it.
 
 **Validation lives in `src/lib/validation.ts`** — a client-safe module with no database
 imports, so forms and actions share one definition of what valid input means.
@@ -42,8 +49,11 @@ imports, so forms and actions share one definition of what valid input means.
 **Database access is server-only.** `src/db/index.ts` imports `server-only`; importing it from
 a client component is a build error rather than a leaked connection string.
 
-**Types come from the schema.** Import `Task`, `Project`, `MemberRole` and friends from
+**Types come from the schema.** Import `Show`, `Department`, `MemberRole` and friends from
 `src/db/schema.ts` instead of hand-writing row shapes.
+
+**Department budgets are derived, not stored.** Don't add budget columns back onto
+`department` — see the comment on that table in `src/db/schema.ts`.
 
 **New environment variables** go in three places: `.env.example` (documented), `src/env.ts`
 (validated), and the CI workflow if tests need them.
@@ -53,7 +63,7 @@ a client component is a build error rather than a leaked connection string.
 - **Unit tests** (`*.test.ts` beside the source) cover pure logic — validation schemas,
   helpers, presentational components. Fast, no database.
 - **End-to-end tests** (`tests/e2e/`) cover real user journeys through a running app.
-  `smoke.spec.ts` needs no data; `projects.spec.ts` needs a seeded database.
+  `smoke.spec.ts` needs no data; `shows.spec.ts` needs a seeded database.
 
 Test behaviour, not implementation. Prefer `getByRole` over test ids — it exercises the
 accessibility tree at the same time.

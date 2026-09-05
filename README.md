@@ -1,6 +1,7 @@
-# Production Manager
+# Callboard
 
-A project-management web app: projects, board columns, tasks, assignees and comments.
+Production management for theatre companies: shows, department budgets, production schedules,
+production meetings with minutes and actions, and a running decision log.
 
 **Stack** — Next.js 16 (App Router) · React 19 · TypeScript · Tailwind CSS 4 · Postgres · Drizzle ORM · Auth.js · Vitest · Playwright
 
@@ -17,13 +18,14 @@ npx auth secret              # writes AUTH_SECRET into .env.local
 
 npm run db:up                # start Postgres on :5433
 npm run db:migrate           # apply migrations
-npm run db:seed              # load sample projects and tasks
+npm run db:seed              # load Northern Rep, a seeded theatre company
 
 npm run dev                  # http://localhost:3000
 ```
 
-Sign in at `/login` with `ada@example.com` — the seeded dev sign-in needs no password. It is
-disabled in production (the app refuses to boot if `ALLOW_DEV_LOGIN` is set there).
+Sign in at `/login` with `producer@northernrep.example` — the seeded dev sign-in needs no
+password. It is disabled in production (the app refuses to boot if `ALLOW_DEV_LOGIN` is set
+there).
 
 ## Scripts
 
@@ -40,32 +42,51 @@ disabled in production (the app refuses to boot if `ALLOW_DEV_LOGIN` is set ther
 | `npm run db:up`       | Start the Postgres container                   |
 | `npm run db:generate` | Generate a migration from schema changes       |
 | `npm run db:migrate`  | Apply pending migrations                       |
-| `npm run db:seed`     | Reseed sample data                             |
+| `npm run db:seed`     | Reseed Northern Rep's sample season            |
 | `npm run db:studio`   | Drizzle Studio, a browser UI for the database  |
 | `npm run db:reset`    | Destroy the volume, recreate, migrate and seed |
 
 `npm run verify` is what CI runs first — run it before pushing.
+
+## The domain
+
+One theatre company (an **organization**) runs several **shows** at once. Each show has:
+
+- **Departments** (Lighting, Sound, AV, Staging, Costume, ...) with notes and documentation
+- A **production schedule** of calls (get-in, rig, tech, dress, press night, ...)
+- **Production meetings**, each with numbered **minutes** and a list of **actions**
+- A **budget**, broken into lines that may or may not fund a specific department
+- **Key tasks** — a lightweight per-show to-do list
+
+Every organization member sees every show; what varies is _role_ (owner/admin/member/viewer).
+Signed-in members can log a **decision** from anywhere in the app — it lands in the portfolio's
+activity feed, tagged to a show and department.
+
+See [docs/architecture.md](docs/architecture.md) for the full data model and
+[docs/adr/0004-callboard-domain.md](docs/adr/0004-callboard-domain.md) for how this domain was
+derived from the design mockup, including where the real app deliberately diverges from it.
 
 ## Project layout
 
 ```
 src/
   app/                  Routes (App Router)
-    (app)/              Signed-in shell: projects, tasks, my-tasks
+    (app)/              Signed-in shell: shows, company
+      shows/[id]/       Overview · schedule · meetings · budget · departments
     login/              Sign-in page
     api/auth/           Auth.js route handlers
-  components/ui/        Presentational primitives
+  components/           Shared UI: design-system primitives, nav, dialogs
   db/
     schema.ts           Drizzle schema — the single source of truth for tables
     index.ts            Pooled client (server-only)
     migrate.ts, seed.ts Standalone scripts
   lib/                  Client-safe helpers: validation, constants, utils
   server/
-    auth-guards.ts      Session + per-project role checks
-    queries.ts          Reads, scoped to the caller's membership
+    auth-guards.ts      Session + organization-role checks
+    queries.ts          Reads, scoped to the caller's organization
     actions.ts          Server actions (mutations)
   env.ts                Validated environment
-  proxy.ts              Security headers (Next 16's renamed middleware)
+  proxy.ts              Security headers (Next 16's renamed middleware.ts)
 drizzle/                Generated SQL migrations (committed)
 tests/e2e/              Playwright specs
 docs/                   Architecture notes and ADRs
@@ -73,12 +94,13 @@ docs/                   Architecture notes and ADRs
 
 ## How the pieces fit
 
-- **Reads** live in `src/server/queries.ts` and always join through `project_member`, so a
-  page cannot leak another workspace's data by passing an id from the URL.
+- **Reads** live in `src/server/queries.ts` and always scope to the caller's organization.
 - **Writes** live in `src/server/actions.ts`. Every action parses `FormData` with a zod schema,
-  authorizes with `requireProjectRole`, mutates, then revalidates.
-- **Authorization is never in `proxy.ts`.** It sets security headers only; it cannot see
-  whether _this_ user may touch _this_ project. See [docs/architecture.md](docs/architecture.md).
+  authorizes with `requireOrgRole`, mutates, then revalidates.
+- **Authorization is never in `proxy.ts`.** It sets security headers only; it cannot see whether
+  _this_ user may touch _this_ show. See [docs/architecture.md](docs/architecture.md).
+- **The design system** (colors, type, `.btn`/`.tag`/`.card`/`.table`/`.dialog` classes) lives in
+  `src/app/globals.css`, ported from the original design mockup — see ADR 0004.
 
 ## Changing the database
 
@@ -99,5 +121,5 @@ version starts serving.
 ## Further reading
 
 - [docs/architecture.md](docs/architecture.md) — data model, auth model, conventions
-- [docs/adr/](docs/adr/) — why the stack is what it is
+- [docs/adr/](docs/adr/) — why the stack — and the domain — are what they are
 - [CONTRIBUTING.md](CONTRIBUTING.md) — workflow and conventions

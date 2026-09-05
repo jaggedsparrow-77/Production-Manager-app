@@ -1,5 +1,6 @@
 import {
   boolean,
+  date,
   index,
   integer,
   pgEnum,
@@ -10,12 +11,16 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import { relations, sql } from "drizzle-orm";
+import { relations } from "drizzle-orm";
 import type { AdapterAccountType } from "next-auth/adapters";
 
-/* -------------------------------------------------------------------------
- * Shared column helpers
- * ---------------------------------------------------------------------- */
+/**
+ * Callboard's domain: a theatre company runs several shows at once, each with
+ * departments, a production schedule, production meetings (minutes + actions),
+ * a budget, and a running feed of decisions. One organization per deployed
+ * instance — every signed-in user is a member of the one company running it,
+ * with a role, and sees every show. See docs/adr/0004-callboard-domain.md.
+ */
 
 const timestamps = {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -23,9 +28,7 @@ const timestamps = {
 };
 
 /* -------------------------------------------------------------------------
- * Auth.js tables
- *
- * Shapes are dictated by @auth/drizzle-adapter — do not rename these columns.
+ * Auth.js tables — shapes dictated by @auth/drizzle-adapter, do not rename.
  * ---------------------------------------------------------------------- */
 
 export const users = pgTable("user", {
@@ -76,55 +79,39 @@ export const verificationTokens = pgTable(
 );
 
 /* -------------------------------------------------------------------------
- * Domain enums
+ * Enums
  * ---------------------------------------------------------------------- */
-
-export const projectStatusEnum = pgEnum("project_status", ["active", "on_hold", "archived"]);
 
 export const memberRoleEnum = pgEnum("member_role", ["owner", "admin", "member", "viewer"]);
 
-/**
- * Where a status sits in the workflow. Board columns are user-defined and
- * reorderable, but reporting needs to know "is this done?" without string
- * matching on a name the user can rename at will.
- */
-export const statusCategoryEnum = pgEnum("status_category", ["backlog", "active", "done"]);
+/** Traffic-light status used for shows and departments. */
+export const healthStateEnum = pgEnum("health_state", ["ok", "warn", "risk"]);
 
-export const taskPriorityEnum = pgEnum("task_priority", ["low", "medium", "high", "urgent"]);
+export const meetingStatusEnum = pgEnum("meeting_status", ["scheduled", "minutes_issued"]);
+
+/** Flag on a task or meeting action. Null (no column value) means unflagged. */
+export const flagTagEnum = pgEnum("flag_tag", ["at_risk", "urgent", "carried_forward"]);
+
+export const activityKindEnum = pgEnum("activity_kind", ["decision", "update", "budget"]);
 
 /* -------------------------------------------------------------------------
- * Projects
+ * Organization — one theatre company per deployed instance.
  * ---------------------------------------------------------------------- */
 
-export const projects = pgTable(
-  "project",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    /** Short uppercase prefix used in task references, e.g. "PM" in PM-42. */
-    key: text("key").notNull(),
-    name: text("name").notNull(),
-    description: text("description"),
-    status: projectStatusEnum("status").notNull().default("active"),
-    ownerId: uuid("owner_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "restrict" }),
-    /** Monotonic counter backing per-project task numbers. */
-    taskCounter: integer("task_counter").notNull().default(0),
-    archivedAt: timestamp("archived_at", { withTimezone: true }),
-    ...timestamps,
-  },
-  (table) => [
-    uniqueIndex("project_key_unique").on(sql`upper(${table.key})`),
-    index("project_status_idx").on(table.status),
-  ],
-);
+export const organizations = pgTable("organization", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  /** Currency symbol used throughout, e.g. "£". */
+  currency: text("currency").notNull().default("£"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
-export const projectMembers = pgTable(
-  "project_member",
+export const organizationMembers = pgTable(
+  "organization_member",
   {
-    projectId: uuid("project_id")
+    organizationId: uuid("organization_id")
       .notNull()
-      .references(() => projects.id, { onDelete: "cascade" }),
+      .references(() => organizations.id, { onDelete: "cascade" }),
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
@@ -132,146 +119,396 @@ export const projectMembers = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    primaryKey({ columns: [table.projectId, table.userId] }),
-    index("project_member_user_idx").on(table.userId),
+    primaryKey({ columns: [table.organizationId, table.userId] }),
+    index("organization_member_user_idx").on(table.userId),
   ],
 );
 
 /* -------------------------------------------------------------------------
- * Task statuses (board columns)
+ * Shows
  * ---------------------------------------------------------------------- */
 
-export const taskStatuses = pgTable(
-  "task_status",
+export const shows = pgTable(
+  "show",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    projectId: uuid("project_id")
+    organizationId: uuid("organization_id")
       .notNull()
-      .references(() => projects.id, { onDelete: "cascade" }),
-    name: text("name").notNull(),
-    category: statusCategoryEnum("category").notNull().default("active"),
-    /** Left-to-right board order. Sparse so inserts rarely renumber siblings. */
-    position: integer("position").notNull(),
-    isDefault: boolean("is_default").notNull().default(false),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    venue: text("venue").notNull(),
+    openDate: date("open_date", { mode: "date" }).notNull(),
+    closeDate: date("close_date", { mode: "date" }).notNull(),
+    /** Free text: "Pre-production", "Build", "Production week", ... */
+    phase: text("phase").notNull(),
+    state: healthStateEnum("state").notNull().default("ok"),
+    director: text("director"),
+    designer: text("designer"),
+    companySize: integer("company_size"),
+    /**
+     * Manually-maintained one-line flag summary, e.g. "2 flags · AV spec, RF
+     * mics" — a producer's own gloss, not derived from the flagged
+     * tasks/actions below (those can span departments in ways a single count
+     * doesn't capture well). Budget totals, by contrast, ARE derived — see
+     * getShowPortfolio in server/queries.ts.
+     */
+    flagsSummary: text("flags_summary"),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    ...timestamps,
   },
   (table) => [
-    uniqueIndex("task_status_project_name_unique").on(table.projectId, table.name),
-    index("task_status_project_position_idx").on(table.projectId, table.position),
+    index("show_organization_idx").on(table.organizationId),
+    index("show_open_date_idx").on(table.openDate),
   ],
 );
 
 /* -------------------------------------------------------------------------
- * Tasks
+ * Departments
+ *
+ * No budget columns here on purpose: a department's spend is its matching
+ * `budgetLine` row (joined by name at read time, in server/queries.ts), not
+ * a second copy of the same figure. Some budget lines — Contingency, Crew &
+ * overtime — have no matching department at all, which is exactly why the
+ * two stay separate tables instead of collapsing one into the other.
+ * ---------------------------------------------------------------------- */
+
+export const departments = pgTable(
+  "department",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    showId: uuid("show_id")
+      .notNull()
+      .references(() => shows.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    headName: text("head_name").notNull(),
+    secondName: text("second_name"),
+    /** Free text label shown next to the status dot, e.g. "Needs attention". */
+    status: text("status").notNull(),
+    state: healthStateEnum("state").notNull().default("ok"),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("department_show_name_unique").on(table.showId, table.name),
+    index("department_show_idx").on(table.showId),
+  ],
+);
+
+export const departmentNotes = pgTable(
+  "department_note",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    departmentId: uuid("department_id")
+      .notNull()
+      .references(() => departments.id, { onDelete: "cascade" }),
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("department_note_department_idx").on(table.departmentId, table.createdAt)],
+);
+
+export const departmentDocs = pgTable(
+  "department_doc",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    departmentId: uuid("department_id")
+      .notNull()
+      .references(() => departments.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** File extension shown as a tag: PDF, DWG, XLSX, MD, ... */
+    ext: text("ext").notNull(),
+    sizeLabel: text("size_label"),
+    /** Null means "awaiting upload" — listed but not yet delivered. */
+    uploadedAt: timestamp("uploaded_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("department_doc_department_idx").on(table.departmentId)],
+);
+
+/* -------------------------------------------------------------------------
+ * Budget
+ * ---------------------------------------------------------------------- */
+
+export const budgetLines = pgTable(
+  "budget_line",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    showId: uuid("show_id")
+      .notNull()
+      .references(() => shows.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /**
+     * Which department this line funds, when it funds exactly one — null
+     * for lines with no department behind them (Contingency, Crew &
+     * overtime). An explicit FK rather than matching on name: a budget
+     * line's display name doesn't have to equal its department's ("AV &
+     * video" funds the "AV" department), so the link needs to be a real
+     * relationship, not a string comparison.
+     */
+    departmentId: uuid("department_id").references(() => departments.id, { onDelete: "set null" }),
+    allocated: integer("allocated").notNull().default(0),
+    committed: integer("committed").notNull().default(0),
+    spent: integer("spent").notNull().default(0),
+    position: integer("position").notNull().default(0),
+  },
+  (table) => [
+    uniqueIndex("budget_line_show_name_unique").on(table.showId, table.name),
+    index("budget_line_show_idx").on(table.showId, table.position),
+    index("budget_line_department_idx").on(table.departmentId),
+  ],
+);
+
+/* -------------------------------------------------------------------------
+ * Production schedule
+ * ---------------------------------------------------------------------- */
+
+export const scheduleCalls = pgTable(
+  "schedule_call",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    showId: uuid("show_id")
+      .notNull()
+      .references(() => shows.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    startAt: timestamp("start_at", { withTimezone: true }).notNull(),
+    /** Null for calls with no scheduled end, e.g. "Curtain 19:30". */
+    endAt: timestamp("end_at", { withTimezone: true }),
+    location: text("location").notNull(),
+    /** Free-text department summary, e.g. "Staging, Lighting" or "All departments". */
+    departmentsLabel: text("departments_label").notNull(),
+    note: text("note"),
+  },
+  (table) => [index("schedule_call_show_start_idx").on(table.showId, table.startAt)],
+);
+
+/* -------------------------------------------------------------------------
+ * Key tasks (per show)
  * ---------------------------------------------------------------------- */
 
 export const tasks = pgTable(
   "task",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    projectId: uuid("project_id")
+    showId: uuid("show_id")
       .notNull()
-      .references(() => projects.id, { onDelete: "cascade" }),
-    /** Per-project sequence number; combined with project.key gives "PM-42". */
-    number: integer("number").notNull(),
-    title: text("title").notNull(),
-    description: text("description"),
-    statusId: uuid("status_id")
-      .notNull()
-      .references(() => taskStatuses.id, { onDelete: "restrict" }),
-    assigneeId: uuid("assignee_id").references(() => users.id, { onDelete: "set null" }),
-    createdById: uuid("created_by_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "restrict" }),
-    priority: taskPriorityEnum("priority").notNull().default("medium"),
-    dueDate: timestamp("due_date", { withTimezone: true }),
-    /** Vertical order within a status column. */
+      .references(() => shows.id, { onDelete: "cascade" }),
+    label: text("label").notNull(),
+    ownerName: text("owner_name").notNull(),
+    dueDate: date("due_date", { mode: "date" }),
+    tag: flagTagEnum("tag"),
+    done: boolean("done").notNull().default(false),
+    doneAt: timestamp("done_at", { withTimezone: true }),
     position: integer("position").notNull().default(0),
-    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("task_show_idx").on(table.showId, table.position)],
+);
+
+/* -------------------------------------------------------------------------
+ * Production meetings
+ * ---------------------------------------------------------------------- */
+
+export const meetings = pgTable(
+  "meeting",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    showId: uuid("show_id")
+      .notNull()
+      .references(() => shows.id, { onDelete: "cascade" }),
+    /** Short reference shown in the meetings list, e.g. "PM 6". */
+    ref: text("ref").notNull(),
+    scheduledAt: timestamp("scheduled_at", { withTimezone: true }).notNull(),
+    endAt: timestamp("end_at", { withTimezone: true }),
+    location: text("location").notNull(),
+    chairName: text("chair_name").notNull(),
+    minuteTakerName: text("minute_taker_name"),
+    status: meetingStatusEnum("status").notNull().default("scheduled"),
+    presentSummary: text("present_summary"),
+    apologiesSummary: text("apologies_summary"),
     ...timestamps,
   },
   (table) => [
-    uniqueIndex("task_project_number_unique").on(table.projectId, table.number),
-    index("task_status_idx").on(table.statusId, table.position),
-    index("task_assignee_idx").on(table.assigneeId),
-    index("task_project_idx").on(table.projectId),
+    uniqueIndex("meeting_show_ref_unique").on(table.showId, table.ref),
+    index("meeting_show_scheduled_idx").on(table.showId, table.scheduledAt),
   ],
 );
 
-/* -------------------------------------------------------------------------
- * Comments
- * ---------------------------------------------------------------------- */
-
-export const comments = pgTable(
-  "comment",
+export const meetingMinutes = pgTable(
+  "meeting_minute",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    taskId: uuid("task_id")
+    meetingId: uuid("meeting_id")
       .notNull()
-      .references(() => tasks.id, { onDelete: "cascade" }),
-    authorId: uuid("author_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    body: text("body").notNull(),
-    ...timestamps,
+      .references(() => meetings.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    item: text("item").notNull(),
+    note: text("note").notNull(),
+    decision: text("decision"),
   },
-  (table) => [index("comment_task_idx").on(table.taskId, table.createdAt)],
+  (table) => [index("meeting_minute_meeting_idx").on(table.meetingId, table.position)],
+);
+
+export const meetingActions = pgTable(
+  "meeting_action",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    meetingId: uuid("meeting_id")
+      .notNull()
+      .references(() => meetings.id, { onDelete: "cascade" }),
+    text: text("text").notNull(),
+    ownerName: text("owner_name").notNull(),
+    dueDate: date("due_date", { mode: "date" }),
+    tag: flagTagEnum("tag"),
+    done: boolean("done").notNull().default(false),
+    doneAt: timestamp("done_at", { withTimezone: true }),
+    position: integer("position").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("meeting_action_meeting_idx").on(table.meetingId, table.position)],
 );
 
 /* -------------------------------------------------------------------------
- * Relations (for drizzle's relational query API)
+ * Activity feed / decision log
  * ---------------------------------------------------------------------- */
 
-export const usersRelations = relations(users, ({ many }) => ({
-  memberships: many(projectMembers),
-  assignedTasks: many(tasks),
-  comments: many(comments),
+export const activityEntries = pgTable(
+  "activity_entry",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    showId: uuid("show_id")
+      .notNull()
+      .references(() => shows.id, { onDelete: "cascade" }),
+    /** Free text — the decision-log dialog offers a fixed list, but this
+     *  stays a plain column rather than a department FK, since not every
+     *  show necessarily has a department row by that name. */
+    departmentName: text("department_name"),
+    kind: activityKindEnum("kind").notNull(),
+    text: text("text").notNull(),
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("activity_entry_organization_idx").on(table.organizationId, table.createdAt)],
+);
+
+/* -------------------------------------------------------------------------
+ * Relations
+ * ---------------------------------------------------------------------- */
+
+export const organizationsRelations = relations(organizations, ({ many }) => ({
+  members: many(organizationMembers),
+  shows: many(shows),
+  activity: many(activityEntries),
 }));
 
-export const projectsRelations = relations(projects, ({ one, many }) => ({
-  owner: one(users, { fields: [projects.ownerId], references: [users.id] }),
-  members: many(projectMembers),
-  statuses: many(taskStatuses),
+export const organizationMembersRelations = relations(organizationMembers, ({ one }) => ({
+  organization: one(organizations, {
+    fields: [organizationMembers.organizationId],
+    references: [organizations.id],
+  }),
+  user: one(users, { fields: [organizationMembers.userId], references: [users.id] }),
+}));
+
+export const showsRelations = relations(shows, ({ one, many }) => ({
+  organization: one(organizations, {
+    fields: [shows.organizationId],
+    references: [organizations.id],
+  }),
+  departments: many(departments),
+  budgetLines: many(budgetLines),
+  scheduleCalls: many(scheduleCalls),
   tasks: many(tasks),
+  meetings: many(meetings),
 }));
 
-export const projectMembersRelations = relations(projectMembers, ({ one }) => ({
-  project: one(projects, { fields: [projectMembers.projectId], references: [projects.id] }),
-  user: one(users, { fields: [projectMembers.userId], references: [users.id] }),
+export const departmentsRelations = relations(departments, ({ one, many }) => ({
+  show: one(shows, { fields: [departments.showId], references: [shows.id] }),
+  notes: many(departmentNotes),
+  docs: many(departmentDocs),
+  budgetLines: many(budgetLines),
 }));
 
-export const taskStatusesRelations = relations(taskStatuses, ({ one, many }) => ({
-  project: one(projects, { fields: [taskStatuses.projectId], references: [projects.id] }),
-  tasks: many(tasks),
+export const departmentNotesRelations = relations(departmentNotes, ({ one }) => ({
+  department: one(departments, {
+    fields: [departmentNotes.departmentId],
+    references: [departments.id],
+  }),
+  author: one(users, { fields: [departmentNotes.authorId], references: [users.id] }),
 }));
 
-export const tasksRelations = relations(tasks, ({ one, many }) => ({
-  project: one(projects, { fields: [tasks.projectId], references: [projects.id] }),
-  status: one(taskStatuses, { fields: [tasks.statusId], references: [taskStatuses.id] }),
-  assignee: one(users, { fields: [tasks.assigneeId], references: [users.id] }),
-  createdBy: one(users, { fields: [tasks.createdById], references: [users.id] }),
-  comments: many(comments),
+export const departmentDocsRelations = relations(departmentDocs, ({ one }) => ({
+  department: one(departments, {
+    fields: [departmentDocs.departmentId],
+    references: [departments.id],
+  }),
 }));
 
-export const commentsRelations = relations(comments, ({ one }) => ({
-  task: one(tasks, { fields: [comments.taskId], references: [tasks.id] }),
-  author: one(users, { fields: [comments.authorId], references: [users.id] }),
+export const budgetLinesRelations = relations(budgetLines, ({ one }) => ({
+  show: one(shows, { fields: [budgetLines.showId], references: [shows.id] }),
+  department: one(departments, {
+    fields: [budgetLines.departmentId],
+    references: [departments.id],
+  }),
+}));
+
+export const scheduleCallsRelations = relations(scheduleCalls, ({ one }) => ({
+  show: one(shows, { fields: [scheduleCalls.showId], references: [shows.id] }),
+}));
+
+export const tasksRelations = relations(tasks, ({ one }) => ({
+  show: one(shows, { fields: [tasks.showId], references: [shows.id] }),
+}));
+
+export const meetingsRelations = relations(meetings, ({ one, many }) => ({
+  show: one(shows, { fields: [meetings.showId], references: [shows.id] }),
+  minutes: many(meetingMinutes),
+  actions: many(meetingActions),
+}));
+
+export const meetingMinutesRelations = relations(meetingMinutes, ({ one }) => ({
+  meeting: one(meetings, { fields: [meetingMinutes.meetingId], references: [meetings.id] }),
+}));
+
+export const meetingActionsRelations = relations(meetingActions, ({ one }) => ({
+  meeting: one(meetings, { fields: [meetingActions.meetingId], references: [meetings.id] }),
+}));
+
+export const activityEntriesRelations = relations(activityEntries, ({ one }) => ({
+  organization: one(organizations, {
+    fields: [activityEntries.organizationId],
+    references: [organizations.id],
+  }),
+  show: one(shows, { fields: [activityEntries.showId], references: [shows.id] }),
+  author: one(users, { fields: [activityEntries.authorId], references: [users.id] }),
 }));
 
 /* -------------------------------------------------------------------------
- * Inferred types — import these instead of hand-writing row shapes.
+ * Inferred types
  * ---------------------------------------------------------------------- */
 
 export type User = typeof users.$inferSelect;
-export type Project = typeof projects.$inferSelect;
-export type NewProject = typeof projects.$inferInsert;
-export type ProjectMember = typeof projectMembers.$inferSelect;
-export type TaskStatus = typeof taskStatuses.$inferSelect;
+export type Organization = typeof organizations.$inferSelect;
+export type Show = typeof shows.$inferSelect;
+export type NewShow = typeof shows.$inferInsert;
+export type Department = typeof departments.$inferSelect;
+export type DepartmentNote = typeof departmentNotes.$inferSelect;
+export type DepartmentDoc = typeof departmentDocs.$inferSelect;
+export type BudgetLine = typeof budgetLines.$inferSelect;
+export type ScheduleCall = typeof scheduleCalls.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
-export type NewTask = typeof tasks.$inferInsert;
-export type Comment = typeof comments.$inferSelect;
+export type Meeting = typeof meetings.$inferSelect;
+export type MeetingMinute = typeof meetingMinutes.$inferSelect;
+export type MeetingAction = typeof meetingActions.$inferSelect;
+export type ActivityEntry = typeof activityEntries.$inferSelect;
 
 export type MemberRole = (typeof memberRoleEnum.enumValues)[number];
-export type TaskPriority = (typeof taskPriorityEnum.enumValues)[number];
-export type StatusCategory = (typeof statusCategoryEnum.enumValues)[number];
-export type ProjectStatus = (typeof projectStatusEnum.enumValues)[number];
+export type HealthState = (typeof healthStateEnum.enumValues)[number];
+export type MeetingStatus = (typeof meetingStatusEnum.enumValues)[number];
+export type FlagTag = (typeof flagTagEnum.enumValues)[number];
+export type ActivityKind = (typeof activityKindEnum.enumValues)[number];

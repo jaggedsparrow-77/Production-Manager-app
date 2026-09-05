@@ -10,15 +10,31 @@ import { SubmitButton } from "@/components/ui/submit-button";
 export const metadata: Metadata = { title: "Sign in" };
 
 export default async function LoginPage() {
-  if (await getCurrentUserId()) redirect("/projects");
+  if (await getCurrentUserId()) redirect("/shows");
 
   return (
-    <main className="flex min-h-dvh items-center justify-center px-4 py-12">
-      <div className="w-full max-w-sm space-y-8">
-        <div className="space-y-2 text-center">
-          <h1 className="text-2xl font-semibold tracking-tight">Production Manager</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">
-            Sign in to plan projects and track work.
+    <main
+      style={{
+        display: "flex",
+        minHeight: "100dvh",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "var(--space-4)",
+      }}
+    >
+      <div
+        style={{
+          width: "100%",
+          maxWidth: 380,
+          display: "flex",
+          flexDirection: "column",
+          gap: "var(--space-6)",
+        }}
+      >
+        <div style={{ textAlign: "center" }}>
+          <h1 style={{ fontSize: 28, letterSpacing: "-0.02em" }}>CALLBOARD</h1>
+          <p className="text-muted" style={{ fontSize: 14 }}>
+            Sign in to see your company&rsquo;s shows.
           </p>
         </div>
 
@@ -26,20 +42,23 @@ export default async function LoginPage() {
           <form
             action={async () => {
               "use server";
-              await signIn("github", { redirectTo: "/projects" });
+              await signIn("github", { redirectTo: "/shows" });
             }}
           >
-            <SubmitButton className="w-full" pendingLabel="Redirecting…">
+            <SubmitButton className="btn-block" pendingLabel="Redirecting…">
               Continue with GitHub
             </SubmitButton>
           </form>
         )}
 
         {githubEnabled && devLoginEnabled && (
-          <div className="flex items-center gap-3 text-xs text-slate-400">
-            <span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+          <div
+            style={{ display: "flex", alignItems: "center", gap: "var(--space-3)", fontSize: 12 }}
+            className="text-muted"
+          >
+            <span style={{ height: 1, flex: 1, background: "var(--color-divider)" }} />
             or
-            <span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+            <span style={{ height: 1, flex: 1, background: "var(--color-divider)" }} />
           </div>
         )}
 
@@ -49,35 +68,41 @@ export default async function LoginPage() {
               "use server";
               await signIn("dev-login", {
                 email: formData.get("email"),
-                redirectTo: "/projects",
+                redirectTo: "/shows",
               });
             }}
-            className="space-y-4 rounded-lg border border-dashed border-amber-400 bg-amber-50/50 p-4 dark:border-amber-700 dark:bg-amber-950/20"
+            className="card"
+            style={{ border: "1px dashed var(--color-accent-400)" }}
           >
-            <p className="text-xs font-medium text-amber-800 dark:text-amber-400">
+            <p style={{ fontSize: 12, fontWeight: 600, color: "var(--color-accent-700)" }}>
               Development sign-in — no password required. Disabled in production.
             </p>
 
-            <Field label="Email" name="email" hint="Try ada@example.com from the seed data.">
-              <Input type="email" required placeholder="ada@example.com" autoComplete="email" />
+            <Field
+              label="Email"
+              name="email"
+              hint="Try producer@northernrep.example from the seed data."
+            >
+              <Input
+                type="email"
+                required
+                placeholder="producer@northernrep.example"
+                autoComplete="email"
+              />
             </Field>
 
-            <SubmitButton variant="secondary" className="w-full" pendingLabel="Signing in…">
+            <SubmitButton variant="secondary" className="btn-block" pendingLabel="Signing in…">
               Sign in
             </SubmitButton>
           </form>
         )}
 
         {!githubEnabled && !devLoginEnabled && (
-          <div className="rounded-lg border border-slate-200 p-4 text-sm text-slate-600 dark:border-slate-800 dark:text-slate-400">
-            <p className="font-medium text-slate-900 dark:text-slate-100">
-              No sign-in method configured
-            </p>
-            <p className="mt-1">
-              Set <code className="font-mono text-xs">AUTH_GITHUB_ID</code> and{" "}
-              <code className="font-mono text-xs">AUTH_GITHUB_SECRET</code>, or enable{" "}
-              <code className="font-mono text-xs">ALLOW_DEV_LOGIN</code> for local development. See{" "}
-              <code className="font-mono text-xs">.env.example</code>.
+          <div className="card" style={{ fontSize: 13 }}>
+            <p style={{ fontWeight: 700 }}>No sign-in method configured</p>
+            <p>
+              Set <code>AUTH_GITHUB_ID</code> and <code>AUTH_GITHUB_SECRET</code>, or enable{" "}
+              <code>ALLOW_DEV_LOGIN</code> for local development. See <code>.env.example</code>.
             </p>
           </div>
         )}
